@@ -25,18 +25,39 @@ module.exports = (NativeCodePush) => {
         // Use the downloaded package info. Native code will save the package info
         // so that the client knows what the current package version is.
         try {
+          // Hoisted ONCE so both the patch path and the full-bundle fallback
+          // see the same prepared package.
           const updatePackageCopy = Object.assign({}, this);
           Object.keys(updatePackageCopy).forEach((key) => (typeof updatePackageCopy[key] === 'function') && delete updatePackageCopy[key]);
 
-          const downloadedPackage = await NativeCodePush.downloadUpdate(updatePackageCopy, !!downloadProgressCallback);
+          const reportStatusOnce = () => {
+            if (reportStatusDownload) {
+              reportStatusDownload(this)
+              .catch((err) => {
+                log(`Report download status failed: ${err}`);
+              });
+            }
+          };
 
-          if (reportStatusDownload) {
-            reportStatusDownload(this)
-            .catch((err) => {
-              log(`Report download status failed: ${err}`);
-            });
+          // Prefer the patch path when the server supplied one. Any failure
+          // (download, apply, hash mismatch, signature verify) falls through
+          // to the full-bundle download below.
+          if (this.patchUrl && this.patchPackageHash) {
+            try {
+              const patchFilePath = await NativeCodePush.downloadPatchFile(
+                this.patchUrl, !!downloadProgressCallback);
+              const installedPackage = await NativeCodePush.applyPatchUpdate(
+                updatePackageCopy, patchFilePath, this.patchPackageHash);
+              reportStatusOnce();
+              return { ...installedPackage, ...local };
+            } catch (patchErr) {
+              log(`Patch apply failed (${patchErr && patchErr.message}); falling back to full bundle.`);
+              // intentionally fall through with the same updatePackageCopy
+            }
           }
 
+          const downloadedPackage = await NativeCodePush.downloadUpdate(updatePackageCopy, !!downloadProgressCallback);
+          reportStatusOnce();
           return { ...downloadedPackage, ...local };
         } finally {
           downloadProgressSubscription && downloadProgressSubscription.remove();

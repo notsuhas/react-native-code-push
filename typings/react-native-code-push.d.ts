@@ -98,6 +98,27 @@ export interface RemotePackage extends Package {
      * The URL at which the package is available for download.
      */
     downloadUrl: string;
+
+    /**
+     * The URL of an HDiffPatch ZIP that upgrades from `patchPackageHash`
+     * to `packageHash`. Present only when the server has pre-computed a
+     * patch for the client's currently-installed package; otherwise the
+     * SDK falls back to `downloadUrl` (full ZIP).
+     */
+    patchUrl?: string;
+
+    /**
+     * Size of the patch ZIP in bytes. Useful for progress UI; the patch
+     * is much smaller than `packageSize`.
+     */
+    patchSize?: number;
+
+    /**
+     * The `packageHash` of the release the patch is FROM. The SDK
+     * verifies this matches its currently-installed package hash before
+     * applying the patch.
+     */
+    patchPackageHash?: string;
 }
 
 export interface SyncOptions {
