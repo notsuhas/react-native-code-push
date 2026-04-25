@@ -20,6 +20,9 @@ android {
 
     compileSdkVersion rootProject.hasProperty('compileSdkVersion') ? rootProject.compileSdkVersion : DEFAULT_COMPILE_SDK_VERSION
     buildToolsVersion rootProject.hasProperty('buildToolsVersion') ? rootProject.buildToolsVersion : DEFAULT_BUILD_TOOLS_VERSION
+    // Pin NDK to a recent stable; bumping requires verifying that vendored
+    // HDiffPatch / patch_core C++ still compile without warnings.
+    ndkVersion rootProject.hasProperty('ndkVersion') ? rootProject.ndkVersion : "26.1.10909125"
 
     defaultConfig {
         minSdkVersion rootProject.hasProperty('minSdkVersion') ? rootProject.minSdkVersion : DEFAULT_MIN_SDK_VERSION
@@ -27,6 +30,22 @@ android {
         versionCode 1
         versionName "1.0"
         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", IS_NEW_ARCHITECTURE_ENABLED.toString()
+
+        // C++14 with exceptions + RTTI for patch_core. Shared STL because
+        // a static one would conflict with anything else the host app links.
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++14 -fexceptions -frtti -Wno-unused-function"
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
     }
 
     lintOptions {
