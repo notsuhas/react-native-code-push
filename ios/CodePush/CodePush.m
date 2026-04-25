@@ -16,6 +16,7 @@
 #endif
 
 #import "CodePush.h"
+#import "CodePushHDiffPatchApplier.h"
 
 @interface CodePush () <RCTBridgeModule, RCTFrameUpdateObserver>
 @end
@@ -777,6 +778,104 @@ RCT_EXPORT_METHOD(downloadUpdate:(NSDictionary*)updatePackage
             self.paused = YES;
             reject([NSString stringWithFormat: @"%lu", (long)err.code], err.localizedDescription, err);
         }];
+}
+
+/*
+ * Native side of `NativeCodePush.downloadPatchFile`. Streams a patch ZIP
+ * from the given URL to a tmp path and returns that path. Kept as its
+ * own bridge method so the JS layer can sequence download → apply and
+ * fall back to the full-bundle path on either step's failure.
+ */
+RCT_EXPORT_METHOD(downloadPatchFile:(NSString *)patchUrl
+                       notifyProgress:(BOOL)notifyProgress
+                             resolver:(RCTPromiseResolveBlock)resolve
+                             rejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSString *patchFilePath = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[@"codepush-patch-"
+            stringByAppendingString:[[NSUUID UUID] UUIDString]]];
+
+    if (notifyProgress) {
+        _didUpdateProgress = NO;
+        self.paused = NO;
+    }
+
+    CodePushDownloadHandler *handler =
+        [[CodePushDownloadHandler alloc]
+            init:patchFilePath
+            operationQueue:_methodQueue
+            progressCallback:^(long long expectedContentLength, long long receivedContentLength) {
+                _latestExpectedContentLength = expectedContentLength;
+                _latestReceivedConentLength = receivedContentLength;
+                _didUpdateProgress = YES;
+                if (expectedContentLength == receivedContentLength) {
+                    _didUpdateProgress = NO;
+                    self.paused = YES;
+                }
+                [self dispatchDownloadProgressEvent];
+            }
+            doneCallback:^(BOOL isZip) {
+                resolve(patchFilePath);
+            }
+            failCallback:^(NSError *err) {
+                _didUpdateProgress = NO;
+                self.paused = YES;
+                [[NSFileManager defaultManager] removeItemAtPath:patchFilePath error:nil];
+                reject([NSString stringWithFormat:@"%lu", (long)err.code],
+                       err.localizedDescription, err);
+            }];
+    [handler download:patchUrl];
+}
+
+/*
+ * Native side of `NativeCodePush.applyPatchUpdate`. Mirrors `downloadUpdate`
+ * — takes the full updatePackage so the apply path can persist `app.json`
+ * with the same metadata the download path writes, and resolves with the
+ * mutated package so the JS layer can hand it straight to `installUpdate`.
+ */
+RCT_EXPORT_METHOD(applyPatchUpdate:(NSDictionary *)updatePackage
+                       patchZipPath:(NSString *)patchZipPath
+                           baseHash:(NSString *)baseHash
+                           resolver:(RCTPromiseResolveBlock)resolve
+                           rejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSMutableDictionary *mutablePackage = [updatePackage mutableCopy];
+    NSString *expectedHash = mutablePackage[PackageHashKey];
+    if (expectedHash.length == 0) {
+        return reject(@"CodePushHDiffPatch", @"Update package is missing packageHash.", nil);
+    }
+
+    NSError *currentErr = nil;
+    NSString *currentFolder = [CodePushPackage getCurrentPackageFolderPath:&currentErr];
+    if (currentErr || currentFolder.length == 0) {
+        return reject(@"CodePushHDiffPatch",
+                      @"No current package folder; cannot apply patch.",
+                      currentErr);
+    }
+
+    NSString *newFolder = [CodePushPackage getPackageFolderPath:expectedHash];
+    NSString *publicKey = [[CodePushConfig current] publicKey];
+
+    NSError *applyErr = nil;
+    BOOL ok = [CodePushHDiffPatchApplier
+        applyPatchWithPackage:mutablePackage
+                 patchZipPath:patchZipPath
+           currentPackagePath:currentFolder
+               newPackagePath:newFolder
+                     baseHash:baseHash
+                    publicKey:publicKey
+                        error:&applyErr];
+
+    // Patch ZIP is consumed regardless of outcome — JS-side tmp file.
+    [[NSFileManager defaultManager] removeItemAtPath:patchZipPath error:nil];
+
+    if (!ok) {
+        return reject(applyErr.domain ?: @"CodePushHDiffPatch",
+                      applyErr.localizedDescription
+                          ?: @"Patch apply failed for an unknown reason.",
+                      applyErr);
+    }
+    resolve(mutablePackage);
 }
 
 - (void)restartAppInternal:(BOOL)onlyIfUpdateIsPending
