@@ -1,0 +1,30 @@
+diff --git a/node_modules/code-push/script/acquisition-sdk.d.ts b/node_modules/code-push/script/acquisition-sdk.d.ts
+index d665254..26d2edd 100644
+--- a/node_modules/code-push/script/acquisition-sdk.d.ts
++++ b/node_modules/code-push/script/acquisition-sdk.d.ts
+@@ -30,6 +30,9 @@ export interface Package {
+ }
+ export interface RemotePackage extends Package {
+     downloadUrl: string;
++    patchUrl?: string;
++    patchSize?: number;
++    patchPackageHash?: string;
+ }
+ export interface NativeUpdateNotification {
+     updateAppVersion: boolean;
+diff --git a/node_modules/code-push/script/acquisition-sdk.js b/node_modules/code-push/script/acquisition-sdk.js
+index 6d1c43d..d08d4b0 100644
+--- a/node_modules/code-push/script/acquisition-sdk.js
++++ b/node_modules/code-push/script/acquisition-sdk.js
+@@ -94,7 +94,10 @@ var AcquisitionManager = exports.AcquisitionManager = /** @class */ (function ()
+                 isMandatory: updateInfo.is_mandatory,
+                 packageHash: updateInfo.package_hash,
+                 packageSize: updateInfo.package_size,
+-                downloadUrl: updateInfo.download_url
++                downloadUrl: updateInfo.download_url,
++                patchUrl: updateInfo.patch_url,
++                patchSize: updateInfo.patch_size,
++                patchPackageHash: updateInfo.patch_package_hash
+             };
+             callback(/*error=*/ null, remotePackage);
+         });
