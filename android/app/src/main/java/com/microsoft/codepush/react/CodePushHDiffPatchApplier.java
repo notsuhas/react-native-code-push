@@ -4,15 +4,14 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.text.Normalizer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -24,7 +23,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
-import java.util.zip.ZipInputStream;
 
 /**
  * Android counterpart to ios/CodePush/CodePushHDiffPatchApplier.mm.
@@ -162,8 +160,7 @@ public final class CodePushHDiffPatchApplier {
                                 "Failed to mkdir parent of " + dst.getAbsolutePath());
                     }
                     try {
-                        Files.copy(src.toPath(), dst.toPath(),
-                                StandardCopyOption.REPLACE_EXISTING);
+                        copyFile(src, dst);
                     } catch (IOException e) {
                         throw new CodePushPatchApplyException(
                                 "Failed to copy " + from + " -> " + to, e);
@@ -214,18 +211,25 @@ public final class CodePushHDiffPatchApplier {
             throw new CodePushPatchApplyException(
                     "Failed to create extraction dir: " + destDir);
         }
-        Path destRoot;
+        // API 16-safe: use getCanonicalPath strings instead of NIO.2 Path.
+        // `java.nio.file.*` is not available on Android pre-API-26.
+        String destRootCanonical;
         try {
-            destRoot = destDir.getCanonicalFile().toPath();
+            destRootCanonical = destDir.getCanonicalPath();
         } catch (IOException e) {
             throw new CodePushPatchApplyException(
                     "Failed to canonicalize extraction dir.", e);
         }
+        String destRootWithSep = destRootCanonical.endsWith(File.separator)
+                ? destRootCanonical
+                : destRootCanonical + File.separator;
 
         Set<String> seenFileKeys = new HashSet<>();
         Set<String> seenDirKeys = new HashSet<>();
 
-        try (ZipFile zip = new ZipFile(zipPath)) {
+        ZipFile zip = null;
+        try {
+            zip = new ZipFile(zipPath);
             java.util.Enumeration<? extends ZipEntry> entries = zip.entries();
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
@@ -250,11 +254,6 @@ public final class CodePushHDiffPatchApplier {
                 }
 
                 File outFile = new File(destDir, normalized);
-                Path outResolved = outFile.toPath().toAbsolutePath().normalize();
-                if (!outResolved.startsWith(destRoot)) {
-                    throw new CodePushPatchApplyException(
-                            "Patch ZIP entry resolves outside extraction dir: " + name);
-                }
 
                 String canonical = Normalizer.normalize(normalized, Normalizer.Form.NFC)
                         .toLowerCase(Locale.ROOT);
@@ -288,26 +287,80 @@ public final class CodePushHDiffPatchApplier {
                             "Failed to mkdir " + parent.getAbsolutePath());
                 }
 
-                try (InputStream in = zip.getInputStream(entry);
-                     OutputStream out = Files.newOutputStream(outFile.toPath())) {
-                    byte[] buf = new byte[16 * 1024];
-                    int n;
-                    while ((n = in.read(buf)) > 0) {
-                        out.write(buf, 0, n);
-                    }
-                }
+                writeZipEntryToFile(zip, entry, outFile);
 
-                // ZIP doesn't carry symlinks portably, but a hostile entry could
-                // arrive as one anyway. Re-check after write.
-                if (Files.isSymbolicLink(outFile.toPath())) {
+                // Defense in depth: a hostile entry's resolved path could end
+                // up outside destDir if a symlink ancestor was created.
+                // getCanonicalPath() resolves all symlinks, so this catches
+                // both Zip Slip leakage and entries materialized as symlinks
+                // pointing outside. NIO.2-free; works on API 16+.
+                String outCanonical;
+                try {
+                    outCanonical = outFile.getCanonicalPath();
+                } catch (IOException e) {
                     throw new CodePushPatchApplyException(
-                            "Patch ZIP entry materialized as a symlink: " + name);
+                            "Failed to canonicalize extracted entry " + name, e);
+                }
+                if (!outCanonical.equals(destRootCanonical)
+                        && !outCanonical.startsWith(destRootWithSep)) {
+                    // Best-effort cleanup before bailing
+                    //noinspection ResultOfMethodCallIgnored
+                    outFile.delete();
+                    throw new CodePushPatchApplyException(
+                            "Patch ZIP entry resolves outside extraction dir: " + name);
                 }
             }
         } catch (CodePushPatchApplyException rethrow) {
             throw rethrow;
         } catch (IOException e) {
             throw new CodePushPatchApplyException("Failed to read patch ZIP.", e);
+        } finally {
+            if (zip != null) {
+                try { zip.close(); } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    private static void writeZipEntryToFile(ZipFile zip, ZipEntry entry, File outFile)
+            throws IOException {
+        InputStream in = null;
+        OutputStream out = null;
+        try {
+            in = zip.getInputStream(entry);
+            out = new BufferedOutputStream(new FileOutputStream(outFile));
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (IOException ignored) { }
+            }
+            if (out != null) {
+                try { out.close(); } catch (IOException ignored) { }
+            }
+        }
+    }
+
+    private static void copyFile(File src, File dst) throws IOException {
+        InputStream in = null;
+        OutputStream out = null;
+        try {
+            in = new BufferedInputStream(new FileInputStream(src));
+            out = new BufferedOutputStream(new FileOutputStream(dst));
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } finally {
+            if (in != null) {
+                try { in.close(); } catch (IOException ignored) { }
+            }
+            if (out != null) {
+                try { out.close(); } catch (IOException ignored) { }
+            }
         }
     }
 
@@ -346,9 +399,11 @@ public final class CodePushHDiffPatchApplier {
                     }
                     copyTreeExcludingManifest(child, target);
                 } else {
-                    Files.copy(child.toPath(), target.toPath(),
-                            StandardCopyOption.REPLACE_EXISTING,
-                            LinkOption.NOFOLLOW_LINKS);
+                    // Stream copy is safe on API 16+. We've already validated
+                    // every extracted file's canonical path stays inside
+                    // destDir in extractZipSafely, so following a symlink
+                    // here can only land in a path we already accepted.
+                    copyFile(child, target);
                 }
             } catch (IOException e) {
                 throw new CodePushPatchApplyException(
