@@ -22,10 +22,16 @@ Pod::Spec.new do |s|
     'cpp/patch_core/archive_patch_core.{h,cpp}',
     'cpp/patch_core/patch_core.{h,cpp}',
     'cpp/patch_core/state_core.{h,cpp}',
+    'cpp/patch_core/hpatch.h',
+    # CodePush-owned hpatch-by-file wrapper (zlib-only; matches the rnota
+    # worker's `hdiffz -c-zlib` invocation). Vendored adaptation of
+    # rn-update's android/jni/hpatch.{c,h}.
+    'cpp/codepush_hpatch/codepush_hpatch.{c,h}',
     # Vendored sisong/HDiffPatch v4.9.0 — apply-side primitives only.
     'cpp/HDiffPatch/file_for_patch.{c,h}',
     'cpp/HDiffPatch/libHDiffPatch/HPatch/*.{c,h}',
     'cpp/HDiffPatch/libParallel/*.{cpp,h}',
+    'cpp/HDiffPatch/decompress_plugin_demo.h',
   ]
   s.public_header_files = ['ios/CodePush/CodePush.h']
   s.pod_target_xcconfig = {
@@ -35,7 +41,7 @@ Pod::Spec.new do |s|
     "GCC_PREPROCESSOR_DEFINITIONS" => "$(inherited) _CRT_SECURE_NO_WARNINGS=1",
     # patch_core.h includes are referenced relatively by pushy/HDiffPatch
     # sources — expose both vendored roots to the Clang search path.
-    "HEADER_SEARCH_PATHS" => "$(inherited) \"${PODS_TARGET_SRCROOT}/cpp\" \"${PODS_TARGET_SRCROOT}/cpp/HDiffPatch\" \"${PODS_TARGET_SRCROOT}/cpp/HDiffPatch/libHDiffPatch\""
+    "HEADER_SEARCH_PATHS" => "$(inherited) \"${PODS_TARGET_SRCROOT}/cpp\" \"${PODS_TARGET_SRCROOT}/cpp/HDiffPatch\" \"${PODS_TARGET_SRCROOT}/cpp/HDiffPatch/libHDiffPatch\" \"${PODS_TARGET_SRCROOT}/cpp/codepush_hpatch\" \"${PODS_TARGET_SRCROOT}/cpp/patch_core\""
   }
 
   # Note: Even though there are copy/pasted versions of some of these dependencies in the repo,

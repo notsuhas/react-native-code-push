@@ -412,6 +412,114 @@ public class CodePushNativeModule extends BaseJavaModule {
         asyncTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
+    /**
+     * Native side of `NativeCodePush.downloadPatchFile`. Streams a patch ZIP
+     * from the URL to a tmp file. Mirrors `downloadUpdate`'s URL-fetch logic
+     * but writes raw bytes (no ZIP detection / extraction here — `applyPatchUpdate`
+     * does that). Returns the local file path so the JS layer can hand it to
+     * the apply step.
+     */
+    @ReactMethod
+    public void downloadPatchFile(final String patchUrl, final boolean notifyProgress, final Promise promise) {
+        AsyncTask<Void, Void, Void> asyncTask = new AsyncTask<Void, Void, Void>() {
+            @Override
+            protected Void doInBackground(Void... params) {
+                java.io.File tmpFile = new java.io.File(
+                        getReactApplicationContext().getCacheDir(),
+                        "codepush-patch-" + java.util.UUID.randomUUID() + ".zip");
+                java.net.HttpURLConnection conn = null;
+                java.io.BufferedInputStream in = null;
+                java.io.BufferedOutputStream out = null;
+                try {
+                    java.net.URL url = new java.net.URL(patchUrl);
+                    conn = (java.net.HttpURLConnection) url.openConnection();
+                    conn.setRequestProperty("Accept-Encoding", "identity");
+                    in = new java.io.BufferedInputStream(conn.getInputStream());
+                    out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(tmpFile),
+                            CodePushConstants.DOWNLOAD_BUFFER_SIZE);
+                    long total = conn.getContentLength();
+                    long received = 0;
+                    byte[] buf = new byte[CodePushConstants.DOWNLOAD_BUFFER_SIZE];
+                    int n;
+                    while ((n = in.read(buf, 0, buf.length)) >= 0) {
+                        out.write(buf, 0, n);
+                        received += n;
+                        if (notifyProgress) {
+                            getReactApplicationContext()
+                                    .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                                    .emit(CodePushConstants.DOWNLOAD_PROGRESS_EVENT_NAME,
+                                            new DownloadProgress(total, received).createWritableMap());
+                        }
+                    }
+                    promise.resolve(tmpFile.getAbsolutePath());
+                } catch (Exception e) {
+                    //noinspection ResultOfMethodCallIgnored
+                    tmpFile.delete();
+                    CodePushUtils.log(e);
+                    promise.reject(e);
+                } finally {
+                    try { if (in != null) in.close(); } catch (Exception ignored) { }
+                    try { if (out != null) out.close(); } catch (Exception ignored) { }
+                    if (conn != null) conn.disconnect();
+                }
+                return null;
+            }
+        };
+        asyncTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    }
+
+    /**
+     * Native side of `NativeCodePush.applyPatchUpdate`. Mirrors `downloadUpdate`'s
+     * shape — takes the full updatePackage so the apply path can persist
+     * `app.json` with the same metadata the full-download path writes, and
+     * resolves with the mutated package so the JS layer can hand it to
+     * `installUpdate` unchanged.
+     */
+    @ReactMethod
+    public void applyPatchUpdate(final ReadableMap updatePackage, final String patchZipPath,
+                                 final String baseHash, final Promise promise) {
+        AsyncTask<Void, Void, Void> asyncTask = new AsyncTask<Void, Void, Void>() {
+            @Override
+            protected Void doInBackground(Void... params) {
+                try {
+                    JSONObject mutablePackage = CodePushUtils.convertReadableToJsonObject(updatePackage);
+                    String expectedHash = mutablePackage.optString(
+                            CodePushConstants.PACKAGE_HASH_KEY, null);
+                    if (expectedHash == null || expectedHash.isEmpty()) {
+                        promise.reject(new Throwable("Update package is missing packageHash."));
+                        return null;
+                    }
+                    String currentFolder = mUpdateManager.getCurrentPackageFolderPath();
+                    String newFolder = mUpdateManager.getPackageFolderPath(expectedHash);
+
+                    CodePushHDiffPatchApplier.applyPatch(
+                            mutablePackage,
+                            patchZipPath,
+                            currentFolder,
+                            newFolder,
+                            baseHash,
+                            mCodePush.getAssetsBundleFileName(),
+                            mCodePush.getPublicKey());
+
+                    promise.resolve(CodePushUtils.convertJsonObjectToWritable(mutablePackage));
+                } catch (CodePushHDiffPatchApplier.CodePushPatchApplyException e) {
+                    CodePushUtils.log(e);
+                    promise.reject(e);
+                } catch (Exception e) {
+                    CodePushUtils.log(e);
+                    promise.reject(e);
+                } finally {
+                    // Always remove the downloaded patch file — caller is responsible
+                    // for re-downloading on retry.
+                    //noinspection ResultOfMethodCallIgnored
+                    new java.io.File(patchZipPath).delete();
+                }
+                return null;
+            }
+        };
+        asyncTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    }
+
     @ReactMethod
     public void getConfiguration(Promise promise) {
         try {
